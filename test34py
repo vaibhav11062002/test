@@ -1,0 +1,34 @@
+import pandas as pd
+from hdbcli import dbapi
+import warnings
+warnings.filterwarnings("ignore")
+
+# Replace the following with your actual credentials
+dbuser = "DSP_CUST_CONTENT#DSP_CUST_CONTENT"
+dbpassword = "g6D,$a%@D`3$!)-GaVO#_[]T+=3z~[Z6"
+dbhost = "c0c94ed5-bef0-4ca4-95f8-55cf5a4ecbdc.hana.prod-us10.hanacloud.ondemand.com"
+dbport = 443  # Typically, default for HANA cloud
+dbschema = "DSP_CUST_CONTENT"
+
+connection = dbapi.connect(
+    address=dbhost,
+    port=dbport,
+    user=dbuser,
+    password=dbpassword,
+    encrypt=True,
+    sslValidateCertificate=False  # Optional, for dev only
+)
+print("Connected to SAP Datasphere")
+
+viewname = "SALES_ORDER_CUST_SEGMENTATION"
+sqlquery = f"SELECT * FROM {dbschema}.{viewname}"
+
+cursor = connection.cursor()
+cursor.execute(sqlquery)
+rows = cursor.fetchall()
+columns = [desc[0] for desc in cursor.description]
+
+df = pd.DataFrame(rows, columns=columns)
+print(df.head())  # Optional: Preview first 5 rows
+column_names = list(df.columns)
+print(column_names)
