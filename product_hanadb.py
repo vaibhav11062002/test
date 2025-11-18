@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 
+
 # =========================
 # Manual Config Variables
 # =========================
@@ -34,9 +35,6 @@ REVENUE_COL = "NetAmount"
 QUANTITY_COL = "OrderQuantity"
 PRICE_COL = "NetPriceAmount"
 CUSTOMER_COL = "SoldToParty"
-COMPANY_COL_CANDIDATES = [
-    "Company Code", "company code", "company_code", "ccode to be billed", "c_code", "ccode", "CCode to Be Billed"
-]
 
 # CORS origins
 origins = [
@@ -46,6 +44,7 @@ origins = [
 ]
 ALLOW_CREDENTIALS = True
 
+
 # =========================
 # Logging config
 # =========================
@@ -54,6 +53,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
 logger = logging.getLogger("product-performance")
+
 
 # =========================
 # LLM Auth
@@ -69,18 +69,10 @@ except Exception as e:
     logger.exception("Failed to configure Generative AI: %s", e)
     raise
 
+
 # =========================
 # Helper Functions
 # =========================
-def find_col(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    cols_lc = {c.lower(): c for c in df.columns}
-    for name in candidates:
-        if name in df.columns:
-            return name
-        if name.lower() in cols_lc:
-            return cols_lc[name.lower()]
-    return None
-
 def sanitize_text(x: Any) -> str:
     if pd.isna(x):
         return ""
@@ -89,14 +81,17 @@ def sanitize_text(x: Any) -> str:
     s = s.replace("|", "/")
     return s
 
+
 def clean_numeric_column(series: pd.Series) -> pd.Series:
     """Clean numeric columns with commas and convert to float"""
     s = series.astype(str).str.replace(",", "", regex=False).str.replace(r"[^\d\.\-]", "", regex=True)
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
+
 def quarter_key_from_period_str(s: str) -> str:
     """Convert period string like '2024Q1' to '2024-Q1'"""
     return s.replace("Q", "-Q")
+
 
 # =========================
 # Pareto Analysis Functions
@@ -110,10 +105,15 @@ def calculate_pareto_analysis(df: pd.DataFrame, group_by_col: str, value_col: st
         logger.error(f"Missing columns. Available: {df.columns.tolist()}")
         return pd.DataFrame()
     
-    # Aggregate by product
+    # Aggregate by material with description
+    agg_dict = {value_col: 'sum'}
+    
+    if ITEM_DESC_COL in df.columns:
+        agg_dict[ITEM_DESC_COL] = 'first'
+    
     pareto_df = (
-        df.groupby(group_by_col)[value_col]
-        .sum()
+        df.groupby(group_by_col)
+        .agg(agg_dict)
         .reset_index()
         .sort_values(by=value_col, ascending=False)
         .reset_index(drop=True)
@@ -154,22 +154,33 @@ def calculate_pareto_analysis(df: pd.DataFrame, group_by_col: str, value_col: st
     
     return pareto_df
 
-def calculate_product_performance_metrics(df: pd.DataFrame, product_id: str, analysis_type: str) -> Dict[str, Any]:
+
+def calculate_product_performance_metrics(df: pd.DataFrame, material_id: str) -> Dict[str, Any]:
     """
-    Calculate comprehensive product performance metrics for a specific product/group
+    Calculate comprehensive product performance metrics for a specific material
     """
     metrics = {}
     
-    analysis_col = ITEM_DESC_COL if analysis_type == "product" else MATERIAL_GROUP_COL
-    product_df = df[df[analysis_col].astype(str) == str(product_id)]
+    product_df = df[df[MATERIAL_COL].astype(str) == str(material_id)]
     
     if product_df.empty:
         return metrics
     
     # Basic metrics
+    metrics['material_id'] = str(material_id)
     metrics['total_revenue'] = float(product_df[REVENUE_COL].sum())
     metrics['total_quantity'] = float(product_df[QUANTITY_COL].sum()) if QUANTITY_COL in product_df.columns else 0
     metrics['transaction_count'] = int(len(product_df))
+    
+    # Get product description
+    if ITEM_DESC_COL in product_df.columns:
+        desc_values = product_df[ITEM_DESC_COL].dropna().unique()
+        metrics['product_description'] = desc_values[0] if len(desc_values) > 0 else ""
+    
+    # Get material group
+    if MATERIAL_GROUP_COL in product_df.columns:
+        group_values = product_df[MATERIAL_GROUP_COL].dropna().unique()
+        metrics['material_group'] = group_values[0] if len(group_values) > 0 else ""
     
     # Price analysis
     if PRICE_COL in product_df.columns:
@@ -207,7 +218,7 @@ def calculate_product_performance_metrics(df: pd.DataFrame, product_id: str, ana
             q_series = g_valid.groupby(g_valid[date_col].dt.to_period("Q"))[REVENUE_COL].sum()
             revenue_by_quarter = {quarter_key_from_period_str(str(k)): float(v) for k, v in q_series.fillna(0).to_dict().items()}
         
-        # Monthly revenue (keeping existing functionality)
+        # Monthly revenue
         if 'Created On' in product_df.columns or 'CreationDate' in product_df.columns:
             product_df_copy = product_df.copy()
             month_col = 'Created On' if 'Created On' in product_df.columns else 'CreationDate'
@@ -219,19 +230,8 @@ def calculate_product_performance_metrics(df: pd.DataFrame, product_id: str, ana
     metrics['revenue_by_year'] = revenue_by_year
     metrics['revenue_by_quarter'] = revenue_by_quarter
     
-    # Material breakdown (for material_group analysis)
-    if analysis_type == "material_group" and ITEM_DESC_COL in product_df.columns:
-        top_products = (
-            product_df.groupby(ITEM_DESC_COL)[REVENUE_COL]
-            .sum()
-            .sort_values(ascending=False)
-            .head(10)
-            .reset_index()
-        )
-        top_products.columns = ['product', 'revenue']
-        metrics['top_products'] = top_products.to_dict('records')
-    
     return metrics
+
 
 # =========================
 # GenAI Prompt for Product Performance
@@ -245,7 +245,8 @@ Use a commercial lens focused on revenue growth, margin improvement, and portfol
 
 JSON schema to return:
 {
-  "product_or_group": "<product/material group name>",
+  "material_id": "<material ID>",
+  "product_name": "<product name>",
   "abc_classification": "A|B|C",
   "performance_summary": "<max 30 words on revenue, volume, and market position>",
   "pareto_insights": "<max 30 words on concentration and contribution to total revenue>",
@@ -296,8 +297,7 @@ TOPPINGS: Gordon Food Service (6% cheaper), US Foods (4% cheaper), Sysco (11% ch
 FILLINGS: Performance Food Group (13% cheaper), Sysco (8% cheaper), US Foods (10% cheaper)
 
 Inputs:
-product_id_or_group = [[PRODUCT_ID]]
-analysis_type = [[ANALYSIS_TYPE]]
+material_id = [[MATERIAL_ID]]
 pareto_data = [[PARETO_DATA]]
 performance_metrics = [[PERFORMANCE_METRICS]]
 
@@ -316,13 +316,14 @@ Analysis Rules:
 Output MUST be a single JSON object exactly per schema; no extra keys.
 """
 
-def build_product_prompt(product_id: str, analysis_type: str, pareto_data: Dict, performance_metrics: Dict) -> str:
+
+def build_product_prompt(material_id: str, pareto_data: Dict, performance_metrics: Dict) -> str:
     prompt = PRODUCT_PROMPT_TEMPLATE
-    prompt = prompt.replace("[[PRODUCT_ID]]", json.dumps(product_id, ensure_ascii=False))
-    prompt = prompt.replace("[[ANALYSIS_TYPE]]", json.dumps(analysis_type, ensure_ascii=False))
+    prompt = prompt.replace("[[MATERIAL_ID]]", json.dumps(material_id, ensure_ascii=False))
     prompt = prompt.replace("[[PARETO_DATA]]", json.dumps(pareto_data, separators=(",", ":"), ensure_ascii=False))
     prompt = prompt.replace("[[PERFORMANCE_METRICS]]", json.dumps(performance_metrics, separators=(",", ":"), ensure_ascii=False))
     return prompt
+
 
 def try_parse_json(text: str):
     try:
@@ -338,6 +339,7 @@ def try_parse_json(text: str):
             pass
     return None
 
+
 def parse_nested_json_list_field(field_value):
     if isinstance(field_value, str):
         try:
@@ -348,9 +350,11 @@ def parse_nested_json_list_field(field_value):
             pass
     return field_value
 
-def coerce_product_schema(obj: Dict[str, Any], product_id: str, abc_class: str) -> Dict[str, Any]:
+
+def coerce_product_schema(obj: Dict[str, Any], material_id: str, abc_class: str) -> Dict[str, Any]:
     out = {
-        "product_or_group": str(obj.get("product_or_group", product_id)),
+        "material_id": str(obj.get("material_id", material_id)),
+        "product_name": str(obj.get("product_name", material_id)),
         "abc_classification": str(abc_class or obj.get("abc_classification", "")),
         "performance_summary": str(obj.get("performance_summary", "")),
         "pareto_insights": str(obj.get("pareto_insights", "")),
@@ -404,6 +408,7 @@ def coerce_product_schema(obj: Dict[str, Any], product_id: str, abc_class: str) 
     
     return out
 
+
 # =========================
 # Load DF from SAP HANA
 # =========================
@@ -428,6 +433,7 @@ def load_df_from_hana():
     logger.info("Successfully loaded data from SAP HANA: %d rows, %d columns", len(df), len(df.columns))
     return df
 
+
 # =========================
 # Load and Process Data
 # =========================
@@ -435,7 +441,7 @@ try:
     raw_df = load_df_from_hana()
     
     # Verify required columns
-    required_cols = [MATERIAL_GROUP_COL, ITEM_DESC_COL, REVENUE_COL]
+    required_cols = [MATERIAL_COL, REVENUE_COL]
     missing_cols = [col for col in required_cols if col not in raw_df.columns]
     
     if missing_cols:
@@ -458,35 +464,17 @@ try:
         if col in raw_df.columns:
             raw_df[col] = pd.to_datetime(raw_df[col], errors='coerce')
     
-    # Calculate Pareto analysis
-    logger.info("Starting Pareto analysis...")
-    pareto_by_material_group = calculate_pareto_analysis(raw_df, MATERIAL_GROUP_COL, REVENUE_COL)
-    pareto_by_product = calculate_pareto_analysis(raw_df, ITEM_DESC_COL, REVENUE_COL)
+    # Calculate Pareto analysis for materials only
+    logger.info("Starting Pareto analysis for materials...")
+    pareto_by_material = calculate_pareto_analysis(raw_df, MATERIAL_COL, REVENUE_COL)
     
-    # Create consolidated Pareto data with both products and material groups
-    pareto_data = pd.DataFrame()
-    
-    if not pareto_by_material_group.empty:
-        mg_data = pareto_by_material_group.copy()
-        mg_data['type'] = 'material_group'
-        mg_data['identifier'] = mg_data[MATERIAL_GROUP_COL]
-        pareto_data = pd.concat([pareto_data, mg_data], ignore_index=True)
-    
-    if not pareto_by_product.empty:
-        prod_data = pareto_by_product.copy()
-        prod_data['type'] = 'product'
-        prod_data['identifier'] = prod_data[ITEM_DESC_COL]
-        pareto_data = pd.concat([pareto_data, prod_data], ignore_index=True)
-    
-    logger.info("Pareto analysis complete: %d material groups, %d products", 
-                len(pareto_by_material_group), len(pareto_by_product))
+    logger.info("Pareto analysis complete: %d materials", len(pareto_by_material))
 
 except Exception as e:
     logger.exception("Error during data load: %s", e)
     raw_df = pd.DataFrame()
-    pareto_by_material_group = pd.DataFrame()
-    pareto_by_product = pd.DataFrame()
-    pareto_data = pd.DataFrame()
+    pareto_by_material = pd.DataFrame()
+
 
 # =========================
 # FastAPI App
@@ -501,9 +489,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Product Performance API with Pareto Analysis"}
+    return {"status": "ok", "message": "Product Performance API with Pareto Analysis (Materials Only)"}
+
 
 @app.get("/health")
 async def health():
@@ -511,94 +501,134 @@ async def health():
         "status": "ok",
         "total_rows": int(len(raw_df)),
         "total_columns": int(len(raw_df.columns)) if not raw_df.empty else 0,
-        "material_groups": int(len(pareto_by_material_group)),
-        "products": int(len(pareto_by_product)),
+        "materials": int(len(pareto_by_material)),
         "columns_available": raw_df.columns.tolist() if not raw_df.empty else []
     }
+
 
 @app.get("/pareto-data")
 async def get_pareto_data():
     """
-    Get consolidated Pareto analysis data for all products and material groups
-    Includes ABC classification, revenue percentages, and rankings
+    Get Pareto analysis data for all materials (products only)
+    Includes ABC classification, revenue percentages, and rankings with Material IDs
     """
     logger.info("GET /pareto-data")
     
-    if pareto_data.empty:
+    if pareto_by_material.empty:
         raise HTTPException(status_code=503, detail="Pareto analysis not available")
     
     # Select relevant columns for frontend
-    output_cols = ['identifier', 'type', REVENUE_COL, 'revenue_pct', 'cumulative_revenue_pct', 
+    output_cols = [MATERIAL_COL, REVENUE_COL, 'revenue_pct', 'cumulative_revenue_pct', 
                    'abc_class', 'rank', 'transaction_count', 'count_pct']
     
-    available_cols = [col for col in output_cols if col in pareto_data.columns]
-    result = pareto_data[available_cols].copy()
+    # Add description if available
+    if ITEM_DESC_COL in pareto_by_material.columns:
+        output_cols.append(ITEM_DESC_COL)
+    
+    available_cols = [col for col in output_cols if col in pareto_by_material.columns]
+    result = pareto_by_material[available_cols].copy()
     
     # Rename for clarity
-    result = result.rename(columns={
-        'identifier': 'name',
+    rename_dict = {
+        MATERIAL_COL: 'material_id',
         REVENUE_COL: 'total_revenue'
-    })
+    }
+    if ITEM_DESC_COL in result.columns:
+        rename_dict[ITEM_DESC_COL] = 'description'
+    
+    result = result.rename(columns=rename_dict)
     
     return result.to_dict(orient="records")
 
-@app.get("/product-insights/{product_identifier}")
+
+@app.get("/materials")
+async def get_materials():
+    """
+    Get list of all materials with their descriptions and basic metrics
+    """
+    logger.info("GET /materials")
+    
+    if raw_df.empty:
+        raise HTTPException(status_code=503, detail="Data not loaded")
+    
+    # Group by material
+    materials = raw_df.groupby(MATERIAL_COL).agg({
+        REVENUE_COL: 'sum',
+        QUANTITY_COL: 'sum' if QUANTITY_COL in raw_df.columns else 'count'
+    }).reset_index()
+    
+    # Add description if available
+    if ITEM_DESC_COL in raw_df.columns:
+        desc_map = raw_df.groupby(MATERIAL_COL)[ITEM_DESC_COL].first().to_dict()
+        materials['description'] = materials[MATERIAL_COL].map(desc_map)
+    
+    # Add material group if available
+    if MATERIAL_GROUP_COL in raw_df.columns:
+        group_map = raw_df.groupby(MATERIAL_COL)[MATERIAL_GROUP_COL].first().to_dict()
+        materials['material_group'] = materials[MATERIAL_COL].map(group_map)
+    
+    # Rename columns
+    materials = materials.rename(columns={
+        MATERIAL_COL: 'material_id',
+        REVENUE_COL: 'total_revenue',
+        QUANTITY_COL: 'total_quantity'
+    })
+    
+    # Sort by revenue
+    materials = materials.sort_values('total_revenue', ascending=False)
+    
+    return materials.to_dict(orient="records")
+
+
+@app.get("/product-insights/{material_id}")
 async def get_product_insights(
-    product_identifier: str,
-    analysis_type: str = Query("product", regex="^(product|material_group)$"),
+    material_id: str,
     debug: bool = Query(False)
 ):
     """
-    Get AI-powered insights for a specific product or material group using Pareto analysis
+    Get AI-powered insights for a specific material using Pareto analysis
     
     Parameters:
-    - product_identifier: Name of the product or material group
-    - analysis_type: 'product' for individual products, 'material_group' for categories
+    - material_id: Material ID
     - debug: Include debug information in response
     
     Returns:
     - Comprehensive analysis with ABC classification, performance metrics, quarterly/yearly revenue, and recommendations
     """
-    logger.info("GET /product-insights/%s type=%s debug=%s", product_identifier, analysis_type, debug)
+    logger.info("GET /product-insights/%s debug=%s", material_id, debug)
     
     try:
         if raw_df.empty:
             raise HTTPException(status_code=503, detail="Data not loaded")
         
-        # Determine analysis column
-        analysis_col = ITEM_DESC_COL if analysis_type == "product" else MATERIAL_GROUP_COL
-        
         # Filter data
-        product_df = raw_df[raw_df[analysis_col].astype(str) == str(product_identifier)]
+        product_df = raw_df[raw_df[MATERIAL_COL].astype(str) == str(material_id)]
         if product_df.empty:
-            raise HTTPException(status_code=404, detail=f"{analysis_type} '{product_identifier}' not found")
+            raise HTTPException(status_code=404, detail=f"Material '{material_id}' not found")
         
         # Get Pareto data
-        pareto_df = pareto_by_product if analysis_type == "product" else pareto_by_material_group
-        
-        if pareto_df.empty:
+        if pareto_by_material.empty:
             raise HTTPException(status_code=503, detail="Pareto analysis not available")
         
-        pareto_row = pareto_df[pareto_df[analysis_col] == product_identifier].head(1)
+        pareto_row = pareto_by_material[pareto_by_material[MATERIAL_COL] == material_id].head(1)
         
         if pareto_row.empty:
-            raise HTTPException(status_code=404, detail=f"{analysis_type} not found in Pareto analysis")
+            raise HTTPException(status_code=404, detail=f"Material not found in Pareto analysis")
         
         pareto_data_single = pareto_row.to_dict('records')[0]
         abc_class = pareto_data_single.get('abc_class', 'C')
         
-        # Calculate performance metrics (now includes revenue_by_year and revenue_by_quarter)
-        performance_metrics = calculate_product_performance_metrics(raw_df, product_identifier, analysis_type)
+        # Calculate performance metrics
+        performance_metrics = calculate_product_performance_metrics(raw_df, material_id)
         
         # Build prompt
         prompt = build_product_prompt(
-            product_id=product_identifier,
-            analysis_type=analysis_type,
+            material_id=material_id,
             pareto_data=pareto_data_single,
             performance_metrics=performance_metrics
         )
         
-        logger.info("Prompt length=%d chars for %s", len(prompt), product_identifier)
+        logger.info("Prompt length=%d chars for %s", len(prompt), material_id)
         
         # Call LLM
         raw_text = ""
@@ -613,11 +643,20 @@ async def get_product_insights(
         
         # Return results
         if isinstance(parsed, dict):
-            coerced = coerce_product_schema(parsed, product_identifier, abc_class)
+            coerced = coerce_product_schema(parsed, material_id, abc_class)
             
             # Ensure revenue data from performance_metrics is included
             coerced['revenue_by_year'] = coerced.get('revenue_by_year') or performance_metrics.get('revenue_by_year', {})
             coerced['revenue_by_quarter'] = coerced.get('revenue_by_quarter') or performance_metrics.get('revenue_by_quarter', {})
+            coerced['material_id'] = material_id
+            
+            # Add product description if available
+            if 'product_description' in performance_metrics:
+                coerced['product_description'] = performance_metrics['product_description']
+            
+            # Add material group if available
+            if 'material_group' in performance_metrics:
+                coerced['material_group'] = performance_metrics['material_group']
             
             if debug:
                 return {
@@ -634,7 +673,8 @@ async def get_product_insights(
         
         # Fallback with revenue data
         fallback = {
-            "product_or_group": product_identifier,
+            "material_id": material_id,
+            "product_name": material_id,
             "abc_classification": abc_class,
             "performance_summary": "",
             "pareto_insights": "",
@@ -650,6 +690,14 @@ async def get_product_insights(
             "observation": [],
             "recommendation": [],
         }
+        
+        # Add product description if available
+        if 'product_description' in performance_metrics:
+            fallback['product_description'] = performance_metrics['product_description']
+        
+        # Add material group if available
+        if 'material_group' in performance_metrics:
+            fallback['material_group'] = performance_metrics['material_group']
         
         if debug:
             return {
@@ -668,3 +716,8 @@ async def get_product_insights(
     except Exception as e:
         logger.exception("Error in get_product_insights: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
