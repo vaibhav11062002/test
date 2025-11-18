@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+google-cloud-storage
+pandas
+numpy
+scikit-learn
+gunicorn
+google-generativeai
+hdbcli
