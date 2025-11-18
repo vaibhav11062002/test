@@ -40,7 +40,7 @@ CUSTOMER_COL = "SoldToParty"
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://chrun-ai.vercel.app"
+    "https://churn-ai-product.vercel.app/"
 ]
 ALLOW_CREDENTIALS = True
 
