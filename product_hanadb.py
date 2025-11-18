@@ -28,12 +28,12 @@ dbschema = "DSP_CUST_CONTENT"
 viewname = "SALES_ORDER_CUST_SEGMENTATION"
 
 MATERIAL_COL = "Material"
-MATERIAL_GROUP_COL = "ProductGroup"  # Changed
-ITEM_DESC_COL = "Item_Description"  # Changed (underscore instead of space)
-REVENUE_COL = "NetAmount"  # Changed
-QUANTITY_COL = "OrderQuantity"  # Changed
-PRICE_COL = "NetPriceAmount"  # Changed
-CUSTOMER_COL = "SoldToParty"  # Changed
+MATERIAL_GROUP_COL = "ProductGroup"
+ITEM_DESC_COL = "Item_Description"
+REVENUE_COL = "NetAmount"
+QUANTITY_COL = "OrderQuantity"
+PRICE_COL = "NetPriceAmount"
+CUSTOMER_COL = "SoldToParty"
 COMPANY_COL_CANDIDATES = [
     "Company Code", "company code", "company_code", "ccode to be billed", "c_code", "ccode", "CCode to Be Billed"
 ]
@@ -93,6 +93,10 @@ def clean_numeric_column(series: pd.Series) -> pd.Series:
     """Clean numeric columns with commas and convert to float"""
     s = series.astype(str).str.replace(",", "", regex=False).str.replace(r"[^\d\.\-]", "", regex=True)
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+def quarter_key_from_period_str(s: str) -> str:
+    """Convert period string like '2024Q1' to '2024-Q1'"""
+    return s.replace("Q", "-Q")
 
 # =========================
 # Pareto Analysis Functions
@@ -181,13 +185,39 @@ def calculate_product_performance_metrics(df: pd.DataFrame, product_id: str, ana
         metrics['unique_customers'] = int(product_df[CUSTOMER_COL].nunique())
         metrics['avg_revenue_per_customer'] = float(metrics['total_revenue'] / metrics['unique_customers']) if metrics['unique_customers'] > 0 else 0
     
-    # Temporal analysis
-    if 'Created On' in product_df.columns:
-        product_df_copy = product_df.copy()
-        product_df_copy['month'] = pd.to_datetime(product_df_copy['Created On'], errors='coerce').dt.to_period('M')
-        monthly = product_df_copy.groupby('month')[REVENUE_COL].sum().reset_index()
-        monthly['month'] = monthly['month'].astype(str)
-        metrics['monthly_revenue'] = monthly.to_dict('records')
+    # Temporal analysis - Yearly and Quarterly revenue
+    revenue_by_year: Dict[str, float] = {}
+    revenue_by_quarter: Dict[str, float] = {}
+    
+    # Find date column
+    date_cols = [c for c in ["BillingDocumentDate", "CreationDate", "Created On", "Billing Date"] if c in product_df.columns]
+    date_col = date_cols[0] if date_cols else None
+    
+    if date_col:
+        g_valid = product_df.copy()
+        g_valid[date_col] = pd.to_datetime(g_valid[date_col], errors='coerce')
+        g_valid = g_valid[pd.notna(g_valid[date_col])].copy()
+        
+        if not g_valid.empty and REVENUE_COL in g_valid.columns:
+            # Revenue by year
+            rev_series = g_valid.groupby(g_valid[date_col].dt.year)[REVENUE_COL].sum()
+            revenue_by_year = {str(int(k)): float(v) for k, v in rev_series.fillna(0).to_dict().items()}
+            
+            # Revenue by quarter
+            q_series = g_valid.groupby(g_valid[date_col].dt.to_period("Q"))[REVENUE_COL].sum()
+            revenue_by_quarter = {quarter_key_from_period_str(str(k)): float(v) for k, v in q_series.fillna(0).to_dict().items()}
+        
+        # Monthly revenue (keeping existing functionality)
+        if 'Created On' in product_df.columns or 'CreationDate' in product_df.columns:
+            product_df_copy = product_df.copy()
+            month_col = 'Created On' if 'Created On' in product_df.columns else 'CreationDate'
+            product_df_copy['month'] = pd.to_datetime(product_df_copy[month_col], errors='coerce').dt.to_period('M')
+            monthly = product_df_copy.groupby('month')[REVENUE_COL].sum().reset_index()
+            monthly['month'] = monthly['month'].astype(str)
+            metrics['monthly_revenue'] = monthly.to_dict('records')
+    
+    metrics['revenue_by_year'] = revenue_by_year
+    metrics['revenue_by_quarter'] = revenue_by_quarter
     
     # Material breakdown (for material_group analysis)
     if analysis_type == "material_group" and ITEM_DESC_COL in product_df.columns:
@@ -234,6 +264,15 @@ JSON schema to return:
     "transaction_share_pct": <number>,
     "avg_order_value": <number>
   },
+  "revenue_by_year": {
+    "YYYY": <number>,
+    "...": <number>
+  },
+  "revenue_by_quarter": {
+    "YYYY-QN": <number>,
+    "...": <number>
+  },
+  "trend_analysis": "<max 40 words on revenue trends across years and quarters>",
   "observation": [
     {"key": "<insight title>", "value": "<business insight>"}
   ],
@@ -247,6 +286,7 @@ Tone and Style:
 - Focus on portfolio profitability, inventory efficiency, and market competitiveness
 - Frame insights around ABC classification and Pareto principle
 - Emphasize high-impact actions that drive 80% of results
+- Analyze year-over-year and quarter-over-quarter trends
 
 Competitive Context for Pricing (apply when relevant):
 BEV SYRUP: Sysco (15% cheaper), US Foods (8% cheaper), Performance Food Group (12% cheaper)
@@ -268,8 +308,10 @@ Analysis Rules:
 4. For C-class products: Evaluate rationalization or niche positioning
 5. Apply Pareto principle to identify high-leverage opportunities
 6. Pricing recommendations should balance competitiveness with margin sustainability
-7. Observations: 3-5 bullet insights on performance patterns and portfolio health
-8. Recommendations: 3-5 actionable steps for portfolio optimization
+7. Analyze revenue_by_year and revenue_by_quarter data to identify growth/decline patterns
+8. Identify seasonality and trend patterns in quarterly data
+9. Observations: 3-5 bullet insights on performance patterns and portfolio health
+10. Recommendations: 3-5 actionable steps for portfolio optimization
 
 Output MUST be a single JSON object exactly per schema; no extra keys.
 """
@@ -318,6 +360,9 @@ def coerce_product_schema(obj: Dict[str, Any], product_id: str, abc_class: str) 
         "portfolio_action": str(obj.get("portfolio_action", "")),
         "revenue_metrics": {},
         "volume_metrics": {},
+        "revenue_by_year": {},
+        "revenue_by_quarter": {},
+        "trend_analysis": str(obj.get("trend_analysis", "")),
         "observation": [],
         "recommendation": [],
     }
@@ -327,6 +372,18 @@ def coerce_product_schema(obj: Dict[str, Any], product_id: str, abc_class: str) 
         metrics = obj.get(key, {})
         if isinstance(metrics, dict):
             out[key] = {k: float(v) if v else 0.0 for k, v in metrics.items()}
+    
+    # Parse revenue dictionaries
+    for dict_key in ['revenue_by_year', 'revenue_by_quarter']:
+        rb = obj.get(dict_key, {})
+        if isinstance(rb, dict):
+            fixed = {}
+            for k, v in rb.items():
+                try:
+                    fixed[str(k)] = float(v)
+                except Exception:
+                    fixed[str(k)] = 0.0
+            out[dict_key] = fixed
     
     # Parse lists
     out["observation"] = parse_nested_json_list_field(obj.get("observation", []))
@@ -343,6 +400,7 @@ def coerce_product_schema(obj: Dict[str, Any], product_id: str, abc_class: str) 
     out["growth_opportunities"] = trim_words(out["growth_opportunities"], 30)
     out["risk_factors"] = trim_words(out["risk_factors"], 30)
     out["portfolio_action"] = trim_words(out["portfolio_action"], 20)
+    out["trend_analysis"] = trim_words(out["trend_analysis"], 40)
     
     return out
 
@@ -499,7 +557,7 @@ async def get_product_insights(
     - debug: Include debug information in response
     
     Returns:
-    - Comprehensive analysis with ABC classification, performance metrics, and recommendations
+    - Comprehensive analysis with ABC classification, performance metrics, quarterly/yearly revenue, and recommendations
     """
     logger.info("GET /product-insights/%s type=%s debug=%s", product_identifier, analysis_type, debug)
     
@@ -526,17 +584,17 @@ async def get_product_insights(
         if pareto_row.empty:
             raise HTTPException(status_code=404, detail=f"{analysis_type} not found in Pareto analysis")
         
-        pareto_data = pareto_row.to_dict('records')[0]
-        abc_class = pareto_data.get('abc_class', 'C')
+        pareto_data_single = pareto_row.to_dict('records')[0]
+        abc_class = pareto_data_single.get('abc_class', 'C')
         
-        # Calculate performance metrics
+        # Calculate performance metrics (now includes revenue_by_year and revenue_by_quarter)
         performance_metrics = calculate_product_performance_metrics(raw_df, product_identifier, analysis_type)
         
         # Build prompt
         prompt = build_product_prompt(
             product_id=product_identifier,
             analysis_type=analysis_type,
-            pareto_data=pareto_data,
+            pareto_data=pareto_data_single,
             performance_metrics=performance_metrics
         )
         
@@ -556,12 +614,17 @@ async def get_product_insights(
         # Return results
         if isinstance(parsed, dict):
             coerced = coerce_product_schema(parsed, product_identifier, abc_class)
+            
+            # Ensure revenue data from performance_metrics is included
+            coerced['revenue_by_year'] = coerced.get('revenue_by_year') or performance_metrics.get('revenue_by_year', {})
+            coerced['revenue_by_quarter'] = coerced.get('revenue_by_quarter') or performance_metrics.get('revenue_by_quarter', {})
+            
             if debug:
                 return {
                     "result": coerced,
                     "debug": {
                         "product_rows": int(len(product_df)),
-                        "pareto_data": pareto_data,
+                        "pareto_data": pareto_data_single,
                         "performance_metrics": performance_metrics,
                         "raw_text_head": raw_text[:400],
                         "parsed": True,
@@ -569,7 +632,7 @@ async def get_product_insights(
                 }
             return coerced
         
-        # Fallback
+        # Fallback with revenue data
         fallback = {
             "product_or_group": product_identifier,
             "abc_classification": abc_class,
@@ -579,8 +642,11 @@ async def get_product_insights(
             "growth_opportunities": "",
             "risk_factors": "",
             "portfolio_action": "",
-            "revenue_metrics": pareto_data,
+            "revenue_metrics": pareto_data_single,
             "volume_metrics": performance_metrics,
+            "revenue_by_year": performance_metrics.get('revenue_by_year', {}),
+            "revenue_by_quarter": performance_metrics.get('revenue_by_quarter', {}),
+            "trend_analysis": "",
             "observation": [],
             "recommendation": [],
         }
@@ -590,6 +656,7 @@ async def get_product_insights(
                 "result": fallback,
                 "debug": {
                     "product_rows": int(len(product_df)),
+                    "performance_metrics": performance_metrics,
                     "raw_text_head": raw_text[:400],
                     "parsed": False,
                 }
