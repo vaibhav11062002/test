@@ -26,15 +26,17 @@ dbpassword = "g6D,$a%@D`3$!)-GaVO#_[]T+=3z~[Z6"
 dbhost = "c0c94ed5-bef0-4ca4-95f8-55cf5a4ecbdc.hana.prod-us10.hanacloud.ondemand.com"
 dbport = 443
 dbschema = "DSP_CUST_CONTENT"
-viewname = "SALES_ORDER_CUST_SEGMENTATION"
+viewname = "SALES_DATA_VIEW"
 
-MATERIAL_COL = "Material"
-MATERIAL_GROUP_COL = "ProductGroup"
-ITEM_DESC_COL = "Item_Description"
-REVENUE_COL = "NetAmount"
-QUANTITY_COL = "OrderQuantity"
-PRICE_COL = "NetPriceAmount"
-CUSTOMER_COL = "SoldToParty"
+# Updated column mappings for new data structure
+MATERIAL_COL = "Product"
+MATERIAL_GROUP_COL = "Product Group"
+ITEM_DESC_COL = "Product Description"
+REVENUE_COL = "Revenue"
+QUANTITY_COL = "Volume"
+PRICE_COL = "ASP"
+CUSTOMER_COL = "Customer"
+DATE_COL = "Date"
 
 # CORS origins
 origins = [
@@ -200,29 +202,25 @@ def calculate_product_performance_metrics(df: pd.DataFrame, material_id: str) ->
     revenue_by_year: Dict[str, float] = {}
     revenue_by_quarter: Dict[str, float] = {}
     
-    # Find date column
-    date_cols = [c for c in ["BillingDocumentDate", "CreationDate", "Created On", "Billing Date"] if c in product_df.columns]
-    date_col = date_cols[0] if date_cols else None
-    
-    if date_col:
+    # Use the Date column for temporal analysis
+    if DATE_COL in product_df.columns:
         g_valid = product_df.copy()
-        g_valid[date_col] = pd.to_datetime(g_valid[date_col], errors='coerce')
-        g_valid = g_valid[pd.notna(g_valid[date_col])].copy()
+        # Date column is in format YYYYMM, convert to datetime
+        g_valid[DATE_COL] = pd.to_datetime(g_valid[DATE_COL].astype(str), format='%Y%m', errors='coerce')
+        g_valid = g_valid[pd.notna(g_valid[DATE_COL])].copy()
         
         if not g_valid.empty and REVENUE_COL in g_valid.columns:
             # Revenue by year
-            rev_series = g_valid.groupby(g_valid[date_col].dt.year)[REVENUE_COL].sum()
+            rev_series = g_valid.groupby(g_valid[DATE_COL].dt.year)[REVENUE_COL].sum()
             revenue_by_year = {str(int(k)): float(v) for k, v in rev_series.fillna(0).to_dict().items()}
             
             # Revenue by quarter
-            q_series = g_valid.groupby(g_valid[date_col].dt.to_period("Q"))[REVENUE_COL].sum()
+            q_series = g_valid.groupby(g_valid[DATE_COL].dt.to_period("Q"))[REVENUE_COL].sum()
             revenue_by_quarter = {quarter_key_from_period_str(str(k)): float(v) for k, v in q_series.fillna(0).to_dict().items()}
-        
-        # Monthly revenue
-        if 'Created On' in product_df.columns or 'CreationDate' in product_df.columns:
-            product_df_copy = product_df.copy()
-            month_col = 'Created On' if 'Created On' in product_df.columns else 'CreationDate'
-            product_df_copy['month'] = pd.to_datetime(product_df_copy[month_col], errors='coerce').dt.to_period('M')
+            
+            # Monthly revenue
+            product_df_copy = g_valid.copy()
+            product_df_copy['month'] = product_df_copy[DATE_COL].dt.to_period('M')
             monthly = product_df_copy.groupby('month')[REVENUE_COL].sum().reset_index()
             monthly['month'] = monthly['month'].astype(str)
             metrics['monthly_revenue'] = monthly.to_dict('records')
@@ -459,10 +457,9 @@ try:
     if QUANTITY_COL in raw_df.columns:
         raw_df[QUANTITY_COL] = clean_numeric_column(raw_df[QUANTITY_COL])
     
-    # Date parsing
-    for col in ["Created On", "Billing Date", "CreationDate", "BillingDocumentDate"]:
-        if col in raw_df.columns:
-            raw_df[col] = pd.to_datetime(raw_df[col], errors='coerce')
+    # Date parsing - Date column is in YYYYMM format
+    if DATE_COL in raw_df.columns:
+        raw_df[DATE_COL] = pd.to_datetime(raw_df[DATE_COL].astype(str), format='%Y%m', errors='coerce')
     
     # Calculate Pareto analysis for materials only
     logger.info("Starting Pareto analysis for materials...")
