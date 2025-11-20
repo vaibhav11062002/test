@@ -28,7 +28,7 @@ dbport = 443
 dbschema = "DSP_CUST_CONTENT"
 viewname = "SALES_ORDER_CUST_SEGMENTATION"
 
-# Column mappings - updated to match new data structure
+# Column mappings - will be set after loading data
 MATERIAL_COL = "Product"
 MATERIAL_GROUP_COL = "Product Group"
 ITEM_DESC_COL = "Product Description"
@@ -93,6 +93,24 @@ def clean_numeric_column(series: pd.Series) -> pd.Series:
 def quarter_key_from_period_str(s: str) -> str:
     """Convert period string like '2024Q1' to '2024-Q1'"""
     return s.replace("Q", "-Q")
+
+
+def find_column_name(df: pd.DataFrame, possible_names: list) -> str:
+    """Find the actual column name from a list of possible names (case-insensitive, handles spaces)"""
+    df_cols_normalized = {col.strip().lower(): col for col in df.columns}
+    
+    for name in possible_names:
+        normalized = name.strip().lower()
+        if normalized in df_cols_normalized:
+            return df_cols_normalized[normalized]
+    
+    return None
+
+
+def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize column names by stripping spaces and standardizing"""
+    df.columns = df.columns.str.strip()
+    return df
 
 
 # =========================
@@ -438,12 +456,30 @@ def load_df_from_hana():
 try:
     raw_df = load_df_from_hana()
     
+    # Normalize column names (strip spaces)
+    raw_df = normalize_column_names(raw_df)
+    
+    logger.info("Available columns after normalization: %s", raw_df.columns.tolist())
+    
+    # Map column names to handle variations
+    MATERIAL_COL = find_column_name(raw_df, ["Product", "Material", "PRODUCT", "MATERIAL"]) or "Product"
+    MATERIAL_GROUP_COL = find_column_name(raw_df, ["Product Group", "ProductGroup", "PRODUCT_GROUP"]) or "Product Group"
+    ITEM_DESC_COL = find_column_name(raw_df, ["Product Description", "Item_Description", "PRODUCT_DESCRIPTION"]) or "Product Description"
+    REVENUE_COL = find_column_name(raw_df, ["Revenue", "NetAmount", "REVENUE"]) or "Revenue"
+    QUANTITY_COL = find_column_name(raw_df, ["Volume", "OrderQuantity", "VOLUME"]) or "Volume"
+    PRICE_COL = find_column_name(raw_df, ["ASP", "NetPriceAmount", "PRICE"]) or "ASP"
+    CUSTOMER_COL = find_column_name(raw_df, ["Customer", "SoldToParty", "CUSTOMER"]) or "Customer"
+    DATE_COL = find_column_name(raw_df, ["Date", "BillingDocumentDate", "CreationDate", "DATE"]) or "Date"
+    
+    logger.info("Mapped columns - Material: %s, Revenue: %s, Date: %s", MATERIAL_COL, REVENUE_COL, DATE_COL)
+    
     # Verify required columns
     required_cols = [MATERIAL_COL, REVENUE_COL]
     missing_cols = [col for col in required_cols if col not in raw_df.columns]
     
     if missing_cols:
         logger.error("Missing required columns: %s", missing_cols)
+        logger.error("Available columns: %s", raw_df.columns.tolist())
         raise ValueError(f"Missing required columns: {missing_cols}")
     
     # Clean numeric columns
@@ -717,4 +753,4 @@ async def get_product_insights(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=10000)
