@@ -26,7 +26,7 @@ dbpassword = "g6D,$a%@D`3$!)-GaVO#_[]T+=3z~[Z6"
 dbhost = "c0c94ed5-bef0-4ca4-95f8-55cf5a4ecbdc.hana.prod-us10.hanacloud.ondemand.com"
 dbport = 443
 dbschema = "DSP_CUST_CONTENT"
-viewname = "SALES_ORDER_CUST_SEGMENTATION"
+viewname = "SALES_DATA_VIEW"
 
 # Column mappings - will be set after loading data
 MATERIAL_COL = "Product"
