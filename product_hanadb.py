@@ -219,32 +219,34 @@ def calculate_product_performance_metrics(df: pd.DataFrame, material_id: str) ->
     # Temporal analysis - Yearly and Quarterly revenue
     revenue_by_year: Dict[str, float] = {}
     revenue_by_quarter: Dict[str, float] = {}
-    
+
     # Use the Date column for temporal analysis
     if DATE_COL in product_df.columns:
         g_valid = product_df.copy()
-        # Date column is in format YYYYMM, convert to datetime
-        g_valid[DATE_COL] = pd.to_datetime(g_valid[DATE_COL].astype(str), format='%Y%m', errors='coerce')
+        
+        # Date is already parsed as datetime64[ns] - DON'T re-parse it!
+        # Just filter for valid dates
         g_valid = g_valid[pd.notna(g_valid[DATE_COL])].copy()
         
         if not g_valid.empty and REVENUE_COL in g_valid.columns:
             # Revenue by year
-            rev_series = g_valid.groupby(g_valid[DATE_COL].dt.year)[REVENUE_COL].sum()
+            rev_series = g_valid.groupby(g_valid[DATE_COL].dt.year)[REVENUE_COL].sum(min_count=1)
             revenue_by_year = {str(int(k)): float(v) for k, v in rev_series.fillna(0).to_dict().items()}
             
             # Revenue by quarter
-            q_series = g_valid.groupby(g_valid[DATE_COL].dt.to_period("Q"))[REVENUE_COL].sum()
+            q_series = g_valid.groupby(g_valid[DATE_COL].dt.to_period("Q"))[REVENUE_COL].sum(min_count=1)
             revenue_by_quarter = {quarter_key_from_period_str(str(k)): float(v) for k, v in q_series.fillna(0).to_dict().items()}
             
             # Monthly revenue
             product_df_copy = g_valid.copy()
             product_df_copy['month'] = product_df_copy[DATE_COL].dt.to_period('M')
-            monthly = product_df_copy.groupby('month')[REVENUE_COL].sum().reset_index()
+            monthly = product_df_copy.groupby('month')[REVENUE_COL].sum(min_count=1).reset_index()
             monthly['month'] = monthly['month'].astype(str)
             metrics['monthly_revenue'] = monthly.to_dict('records')
-    
+
     metrics['revenue_by_year'] = revenue_by_year
     metrics['revenue_by_quarter'] = revenue_by_quarter
+
     
     return metrics
 
@@ -462,14 +464,37 @@ try:
     logger.info("Available columns after normalization: %s", raw_df.columns.tolist())
     
     # Map column names to handle variations
-    MATERIAL_COL = find_column_name(raw_df, ["Product", "Material", "PRODUCT", "MATERIAL"]) or "Product"
-    MATERIAL_GROUP_COL = find_column_name(raw_df, ["Product Group", "ProductGroup", "PRODUCT_GROUP"]) or "Product Group"
-    ITEM_DESC_COL = find_column_name(raw_df, ["Product Description", "Item_Description", "PRODUCT_DESCRIPTION"]) or "Product Description"
-    REVENUE_COL = find_column_name(raw_df, ["Revenue", "NetAmount", "REVENUE"]) or "Revenue"
-    QUANTITY_COL = find_column_name(raw_df, ["Volume", "OrderQuantity", "VOLUME"]) or "Volume"
-    PRICE_COL = find_column_name(raw_df, ["ASP", "NetPriceAmount", "PRICE"]) or "ASP"
-    CUSTOMER_COL = find_column_name(raw_df, ["Customer", "SoldToParty", "CUSTOMER"]) or "Customer"
-    DATE_COL = find_column_name(raw_df, ["Date", "BillingDocumentDate", "CreationDate", "DATE"]) or "Date"
+    MATERIAL_COL = find_column_name(raw_df, ["Product", "Material", "PRODUCT", "MATERIAL"])
+    if not MATERIAL_COL:
+        MATERIAL_COL = "Product"
+        
+    MATERIAL_GROUP_COL = find_column_name(raw_df, ["Product Group", "ProductGroup", "PRODUCT_GROUP"])
+    if not MATERIAL_GROUP_COL:
+        MATERIAL_GROUP_COL = "Product Group"
+        
+    ITEM_DESC_COL = find_column_name(raw_df, ["Product Description", "Item_Description", "PRODUCT_DESCRIPTION"])
+    if not ITEM_DESC_COL:
+        ITEM_DESC_COL = "Product Description"
+        
+    REVENUE_COL = find_column_name(raw_df, ["Revenue", "NetAmount", "REVENUE"])
+    if not REVENUE_COL:
+        REVENUE_COL = "Revenue"
+        
+    QUANTITY_COL = find_column_name(raw_df, ["Volume", "OrderQuantity", "VOLUME"])
+    if not QUANTITY_COL:
+        QUANTITY_COL = "Volume"
+        
+    PRICE_COL = find_column_name(raw_df, ["ASP", "NetPriceAmount", "PRICE"])
+    if not PRICE_COL:
+        PRICE_COL = "ASP"
+        
+    CUSTOMER_COL = find_column_name(raw_df, ["Customer", "SoldToParty", "CUSTOMER"])
+    if not CUSTOMER_COL:
+        CUSTOMER_COL = "Customer"
+        
+    DATE_COL = find_column_name(raw_df, ["Date", "BillingDocumentDate", "CreationDate", "DATE"])
+    if not DATE_COL:
+        DATE_COL = "Date"
     
     logger.info("Mapped columns - Material: %s, Revenue: %s, Date: %s", MATERIAL_COL, REVENUE_COL, DATE_COL)
     
@@ -493,9 +518,10 @@ try:
     if QUANTITY_COL in raw_df.columns:
         raw_df[QUANTITY_COL] = clean_numeric_column(raw_df[QUANTITY_COL])
     
-    # Date parsing - Date column is in YYYYMM format
+    # Date parsing - HANA returns datetime.date objects
     if DATE_COL in raw_df.columns:
-        raw_df[DATE_COL] = pd.to_datetime(raw_df[DATE_COL].astype(str), format='%Y%m', errors='coerce')
+        raw_df[DATE_COL] = pd.to_datetime(raw_df[DATE_COL], errors="coerce")
+
     
     # Calculate Pareto analysis for materials only
     logger.info("Starting Pareto analysis for materials...")
@@ -749,7 +775,6 @@ async def get_product_insights(
     except Exception as e:
         logger.exception("Error in get_product_insights: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
-
 
 if __name__ == "__main__":
     import uvicorn
