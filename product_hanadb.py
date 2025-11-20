@@ -26,9 +26,9 @@ dbpassword = "g6D,$a%@D`3$!)-GaVO#_[]T+=3z~[Z6"
 dbhost = "c0c94ed5-bef0-4ca4-95f8-55cf5a4ecbdc.hana.prod-us10.hanacloud.ondemand.com"
 dbport = 443
 dbschema = "DSP_CUST_CONTENT"
-viewname = "SALES_DATA_VIEW"
+viewname = "SALES_ORDER_CUST_SEGMENTATION"
 
-# Updated column mappings for new data structure
+# Column mappings - updated to match new data structure
 MATERIAL_COL = "Product"
 MATERIAL_GROUP_COL = "Product Group"
 ITEM_DESC_COL = "Product Description"
@@ -525,7 +525,7 @@ async def get_pareto_data():
     available_cols = [col for col in output_cols if col in pareto_by_material.columns]
     result = pareto_by_material[available_cols].copy()
     
-    # Rename for clarity
+    # Rename for clarity - keeping exact same names as original
     rename_dict = {
         MATERIAL_COL: 'material_id',
         REVENUE_COL: 'total_revenue'
@@ -564,7 +564,7 @@ async def get_materials():
         group_map = raw_df.groupby(MATERIAL_COL)[MATERIAL_GROUP_COL].first().to_dict()
         materials['material_group'] = materials[MATERIAL_COL].map(group_map)
     
-    # Rename columns
+    # Rename columns - keeping exact same names as original
     materials = materials.rename(columns={
         MATERIAL_COL: 'material_id',
         REVENUE_COL: 'total_revenue',
